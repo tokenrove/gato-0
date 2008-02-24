@@ -1,0 +1,9 @@
+
+define popd { [pop] dip }
+define swapd { [swap] dip }
+define swapdd { [swapd] dip }
+
+define eqz { dup 0 eq }
+define neqz { eqz not }
+define papply { [quote] dip compose }
+define repeat { swap [dip dec] papply [neqz] while pop }

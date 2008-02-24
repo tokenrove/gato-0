@@ -23,17 +23,25 @@
    (code :accessor code-of)
    (source :accessor source-of)))
 
-(defclass primitive (block) ())
-
 (defun make-block ()
   (aprog1 (make-instance 'block)
     (setf (code-of it) ())))
 
+
+(defclass primitive (block) ())
+
+(defun make-primitive (type body)
+  (aprog1 (make-instance 'primitive)
+    (setf (type-of it) type
+          (code-of it) body)))
+
 (defun compile-cat-file (file)
   (with-open-file (stream file)
-    (emit-code (read-block stream nil))))
+    (let ((*readtable* *cat-readtable*))
+      (emit-code (read-block stream nil)))))
 
-(defmethod emit-code ((block block)))
+(defmethod emit-code ((block block))
+  (code-of block))
 (defmethod emit-code ((block primitive))
   (code-of block))
 
@@ -44,9 +52,31 @@
 (defun read-block (stream char)
   (declare (ignore char))
   (aprog1 (make-block)
-    (setf (code-of it) (loop for x = (read stream nil) until (case x ((] } nil) t)) collect x))
+    (setf (code-of it) (parse-cat-code stream))
     (typecheck it)))
 
+(defvar *environment* (make-environment))
+
+(defun verify-type (block type))
+
+(defun read-define (stream)
+  (let ((identifier (read stream)))
+    (bind *environment* identifier
+          (aprog1 (read stream)
+            (when (eql it '|:|)
+              (let ((type (read stream)))
+                (setf it (read stream))
+                (verify-type it type)))))))
+
+(defun parse-cat-code (stream)
+  (loop
+     for x = (read stream nil)
+     until (case x ((] } nil) t))
+     if (eql x '|define|) do (read-define stream)
+     else collect (typecase x
+                    (symbol (or (binding-of *environment* x)
+                                (warn "~&Can't find binding for ~A" x))) ;XXX if we can't find it, mark an error and continue
+                    (otherwise x))))
 
 (defparameter *cat-readtable* (make-cat-readtable))
 (defun make-cat-readtable ()
@@ -56,33 +86,67 @@
     (set-macro-character #\{ #'read-block nil it)
     (set-macro-character #\} (lambda (s c) (declare (ignore s c))) nil it) ; to terminate blocks properly
     (set-macro-character #\] (lambda (s c) (declare (ignore s c))) nil it)
+    (set-macro-character #\: nil nil it)
     (set-macro-character #\# nil nil it) ; disable reader dispatch
     (set-macro-character #\` nil nil it))) ; disable backquoting
 
 
-#|
 (defparameter *stack* ())
 (defun push (x) (cl:push x *stack*))
 (defun pop () (cl:pop *stack*))
-(defun peek () (car *stack*))
-(defun (setf peek) (v) (setf (car *stack*) v))
+(defmacro peek () `(car *stack*))
+(defmacro npeek (n) `(elt ,n *stack*))
+;;(defun (setf peek) (v) (setf (car *stack*) v))
 
+(defmacro define-cat-types (&rest foo) (declare (ignore foo)))
 ;; types
 (define-cat-types int bool list var)
 
+(defmacro define-cat-primitives ((env) &body rest)
+  `(progn
+     ,@(loop for (id type . body) in rest
+          collecting `(setf ,env
+                            (bind ,env (intern (string-downcase (symbol-name ',id)))
+                                  (make-primitive ',type ',@body))))))
 ;; primitives
-(define-cat-primitives ()
-  (compose (('A -> 'B) ('B -> 'C) -> ('A -> 'C)))
-  (cons (list 'a -> list))
-  (uncons (list -> list var))
+(define-cat-primitives (*environment*)
+  (compose (('A -> 'B) ('B -> 'C) -> ('A -> 'C))
+           (let ((a (pop)) (b (pop))) (push (lambda () a b))))
+  (cons (list 'a -> list)
+        (push (cons (pop) (pop))))
+  (uncons (list -> list var)
+          (let ((l (pop)))
+            (push (tail l))
+            (push (head l))))
   (dec (int -> int)
        (decf (peek)))
-  (dip ('A 'b ('A -> 'C) -> 'C 'b))
-  (dup ('a -> 'a 'a))
-  (eq ('a 'a -> bool))
-  (if ('A bool ('A -> 'B) ('A -> 'B) -> 'B))
-  (inc (int -> int))
+  (dip ('A 'b ('A -> 'C) -> 'C 'b)
+       (let ((f (pop))
+             (b (pop)))
+         (push (apply f))
+         (push b)))
+  (dup ('a -> 'a 'a) (push (peek)))
+  (eq ('a 'a -> bool) (let ((a (pop)) (b (pop))) (push (eql a b))))
+  (if ('A bool ('A -> 'B) ('A -> 'B) -> 'B)
+      (let ((false (pop))
+            (true (pop))
+            (p (pop)))
+        (if p (apply true) (apply false))))
+  (inc (int -> int) (incf (peek)))
   (pop ('a -> ) (pop))
-  (qv ('a -> ( -> 'a)))
-  (@ (( -> 'A) -> list))
- |#
+  (quote ('a -> ( -> 'a)) (push (lambda () (pop))))
+  (list (( -> 'A) -> list) (push (list (pop)))))
+
+
+;; non-level-0 ones
+(define-cat-primitives (*environment*)
+  (not (bool -> bool) (setf (peek) (not (peek))))
+  (while ('A (->) (-> bool) -> 'A)
+    (loop with f = (pop) and ? = (pop)
+       for x = (apply ?) until (peek) do (apply f)))
+  (+ (int int -> int) (push (+ (pop) (pop))))
+  (swap ('a 'b -> 'b 'a) (rotatef (peek) (npeek 1)))
+  (<= (int int -> bool) (push (<= (pop) (pop))))
+  (write ('a ->) (print (pop))))
+
+(compile-cat-file "prelude.cat")
