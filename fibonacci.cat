@@ -1,0 +1,11 @@
+
+define simple : (int -> int) { inc }
+
+define fourth { swapdd swapd swap }
+define fibonacci {
+  dup 0 <= [0]
+           [dec 0 1 [dup swapd +] fourth repeat]
+  if popd
+}
+
+12 fibonacci write

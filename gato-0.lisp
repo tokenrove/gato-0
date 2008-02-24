@@ -19,8 +19,8 @@
 
 (defclass block ()
   ((env :accessor environment-of)
-   (type :accessor type-of)
-   (code :accessor code-of)
+   (type :accessor type-of :initarg :type)
+   (code :accessor code-of :initarg :code)
    (source :accessor source-of)))
 
 (defun make-block ()
@@ -28,12 +28,11 @@
     (setf (code-of it) ())))
 
 
-(defclass primitive (block) ())
+(defclass primitive (block)
+  ((name :initarg :name)))
 
-(defun make-primitive (type body)
-  (aprog1 (make-instance 'primitive)
-    (setf (type-of it) type
-          (code-of it) body)))
+(defun make-primitive (name type body)
+  (make-instance 'primitive :name name :type type :code body))
 
 (defun compile-cat-file (file)
   (with-open-file (stream file)
@@ -57,7 +56,7 @@
 
 (defvar *environment* (make-environment))
 
-(defun verify-type (block type))
+(defun verify-type (block type) (declare (ignore block type)))
 
 (defun read-define (stream)
   (let ((identifier (read stream)))
@@ -73,10 +72,7 @@
      for x = (read stream nil)
      until (case x ((] } nil) t))
      if (eql x '|define|) do (read-define stream)
-     else collect (typecase x
-                    (symbol (or (binding-of *environment* x)
-                                (warn "~&Can't find binding for ~A" x))) ;XXX if we can't find it, mark an error and continue
-                    (otherwise x))))
+     else collect x))
 
 (defparameter *cat-readtable* (make-cat-readtable))
 (defun make-cat-readtable ()
@@ -90,12 +86,23 @@
     (set-macro-character #\# nil nil it) ; disable reader dispatch
     (set-macro-character #\` nil nil it))) ; disable backquoting
 
+(defmethod apply ((block block))
+  (loop for x in (code-of block)
+        do (eval x *environment*)))
+
+(defmethod apply ((primitive primitive))
+  (cl:eval (code-of primitive)))
+
+(defun eval (something environment)
+  (typecase something
+    (symbol (apply (binding-of environment something)))
+    (t (push something))))
 
 (defparameter *stack* ())
 (defun push (x) (cl:push x *stack*))
 (defun pop () (cl:pop *stack*))
 (defmacro peek () `(car *stack*))
-(defmacro npeek (n) `(elt ,n *stack*))
+(defmacro npeek (n) `(elt *stack* ,n))
 ;;(defun (setf peek) (v) (setf (car *stack*) v))
 
 (defmacro define-cat-types (&rest foo) (declare (ignore foo)))
@@ -107,26 +114,22 @@
      ,@(loop for (id type . body) in rest
           collecting `(setf ,env
                             (bind ,env (intern (string-downcase (symbol-name ',id)))
-                                  (make-primitive ',type ',@body))))))
+                                  (make-primitive ',id ',type ',@body))))))
 ;; primitives
 (define-cat-primitives (*environment*)
   (compose (('A -> 'B) ('B -> 'C) -> ('A -> 'C))
-           (let ((a (pop)) (b (pop))) (push (lambda () a b))))
-  (cons (list 'a -> list)
-        (push (cons (pop) (pop))))
-  (uncons (list -> list var)
-          (let ((l (pop)))
-            (push (tail l))
-            (push (head l))))
-  (dec (int -> int)
-       (decf (peek)))
+           (push (aprog1 (make-block)
+                   (setf (code-of it) (let ((b (pop)) (a (pop))) (append (code-of a) (code-of b)))))))
+  (cons (list 'a -> list) (let ((a (pop)) (l (pop))) (push (cons a l))))
+  (uncons (list -> list var) (destructuring-bind (head . tail) (pop) (push head) (push tail)))
+  (dec (int -> int) (decf (peek)))
   (dip ('A 'b ('A -> 'C) -> 'C 'b)
        (let ((f (pop))
              (b (pop)))
-         (push (apply f))
+         (apply f)
          (push b)))
   (dup ('a -> 'a 'a) (push (peek)))
-  (eq ('a 'a -> bool) (let ((a (pop)) (b (pop))) (push (eql a b))))
+  (eq ('a 'a -> bool) (push (eql (pop) (pop))))
   (if ('A bool ('A -> 'B) ('A -> 'B) -> 'B)
       (let ((false (pop))
             (true (pop))
@@ -134,7 +137,7 @@
         (if p (apply true) (apply false))))
   (inc (int -> int) (incf (peek)))
   (pop ('a -> ) (pop))
-  (quote ('a -> ( -> 'a)) (push (lambda () (pop))))
+  (quote ('a -> ( -> 'a)) (push (aprog1 (make-block) (setf (code-of it) (list (pop))))))
   (list (( -> 'A) -> list) (push (list (pop)))))
 
 
@@ -142,11 +145,13 @@
 (define-cat-primitives (*environment*)
   (not (bool -> bool) (setf (peek) (not (peek))))
   (while ('A (->) (-> bool) -> 'A)
-    (loop with f = (pop) and ? = (pop)
-       for x = (apply ?) until (peek) do (apply f)))
+    (loop with ? = (pop) and f = (pop)
+       for x = (apply ?) while (pop) do (apply f)))
   (+ (int int -> int) (push (+ (pop) (pop))))
+  (- (int int -> int) (let ((b (pop)) (a (pop))) (push (- a b))))
+  (apply ('A ('A -> 'B) -> 'B) (apply (pop)))
   (swap ('a 'b -> 'b 'a) (rotatef (peek) (npeek 1)))
-  (<= (int int -> bool) (push (<= (pop) (pop))))
+  (<= (int int -> bool) (let ((b (pop)) (a (pop))) (push (<= a b))))
   (write ('a ->) (print (pop))))
 
 (compile-cat-file "prelude.cat")
