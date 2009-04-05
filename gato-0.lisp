@@ -8,6 +8,7 @@
     (setf (bindings-of it) (make-hash-table)
           (parent-of it) parent)))
 
+(defgeneric binding-of (env sym))
 (defmethod binding-of ((env environment) symbol)
   (aif (gethash symbol (bindings-of env)) it (binding-of (parent-of env) symbol)))
 (defmethod binding-of (env symbol) nil)
@@ -23,16 +24,27 @@
    (code :accessor code-of :initarg :code)
    (source :accessor source-of)))
 
-(defun make-block ()
-  (aprog1 (make-instance 'block)
-    (setf (code-of it) ())))
-
+(defun make-block (code) (make-instance 'block :code code))
 
 (defclass primitive (block)
   ((name :initarg :name)))
 
 (defun make-primitive (name type body)
-  (make-instance 'primitive :name name :type type :code body))
+  (make-instance 'primitive :name name :type type :code (compile nil body)))
+
+(defclass composed-block (block) ())
+
+(defun make-composed-block (b a)
+  (make-instance 'composed-block :code (list a b)))
+
+(defun repl ()
+  (let ((*readtable* *cat-readtable*))
+    (loop (print (eval (read) *environment*)))))
+
+(defun eval-cat-file (file)
+  (with-open-file (stream file)
+    (let ((*readtable* *cat-readtable*))
+      (apply (read-block stream nil)))))
 
 (defun compile-cat-file (file)
   (with-open-file (stream file)
@@ -48,8 +60,7 @@
 
 (defun read-block (stream char)
   (declare (ignore char))
-  (aprog1 (make-block)
-    (setf (code-of it) (parse-cat-code stream))
+  (aprog1 (make-block (parse-cat-code stream))
     (typecheck it)))
 
 (defvar *environment* (make-environment))
@@ -66,34 +77,43 @@
                 (verify-type it type)))))))
 
 (defun parse-cat-code (stream)
-  (loop
-     for x = (read stream nil)
+  (loop for x = (read stream nil)
      until (case x ((] } nil) t))
      if (eql x '|define|) do (read-define stream)
      else collect x))
 
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun make-cat-readtable ()
+    (aprog1 (copy-readtable)
+      (setf (readtable-case it) :preserve)
+      (set-macro-character #\[ #'read-block nil it)
+      (set-macro-character #\{ #'read-block nil it)
+      (set-macro-character #\} (lambda (s c) (declare (ignore s c))) nil it) ; to terminate blocks properly
+      (set-macro-character #\] (lambda (s c) (declare (ignore s c))) nil it)
+      (set-macro-character #\: nil nil it)
+      (set-macro-character #\# nil nil it) ; disable reader dispatch
+      (set-macro-character #\` nil nil it)))) ; disable backquoting
 (defparameter *cat-readtable* (make-cat-readtable))
-(defun make-cat-readtable ()
-  (aprog1 (copy-readtable)
-    (setf (readtable-case it) :preserve)
-    (set-macro-character #\[ #'read-block nil it)
-    (set-macro-character #\{ #'read-block nil it)
-    (set-macro-character #\} (lambda (s c) (declare (ignore s c))) nil it) ; to terminate blocks properly
-    (set-macro-character #\] (lambda (s c) (declare (ignore s c))) nil it)
-    (set-macro-character #\: nil nil it)
-    (set-macro-character #\# nil nil it) ; disable reader dispatch
-    (set-macro-character #\` nil nil it))) ; disable backquoting
+
+;;;; EVALUATION
 
 (defmethod apply ((block block))
-  (mapcar (rcurry #'eval *environment*) (code-of block)))
+  (mapc (rcurry #'eval *environment*) (code-of block)))
+
+(defmethod apply ((block composed-block))
+  (mapc #'apply (code-of block)))
 
 (defmethod apply ((primitive primitive))
-  (cl:eval (code-of primitive)))
+  (funcall (code-of primitive)))
 
 (defun eval (something environment)
   (typecase something
     (symbol (apply (binding-of environment something)))
+    (function (funcall something))
     (t (push something))))
+
+;;;; STACK
 
 (defparameter *stack* ())
 (defun push (x) (cl:push x *stack*))
@@ -111,12 +131,11 @@
      ,@(loop for (id type . body) in rest
           collecting `(setf ,env
                             (bind ,env (intern (string-downcase (symbol-name ',id)))
-                                  (make-primitive ',id ',type ',@body))))))
+                                  (make-primitive ',id ',type (lambda () ,@body)))))))
 ;; primitives
 (define-cat-primitives (*environment*)
   (compose (('A -> 'B) ('B -> 'C) -> ('A -> 'C))
-           (push (aprog1 (make-block)
-                   (setf (code-of it) (let ((b (pop)) (a (pop))) (append (code-of a) (code-of b)))))))
+           (push (make-composed-block (pop) (pop))))
   (cons (list 'a -> list) (let ((a (pop)) (l (pop))) (push (cons a l))))
   (uncons (list -> list var) (destructuring-bind (head . tail) (pop) (push head) (push tail)))
   (dec (int -> int) (decf (peek)))
@@ -134,7 +153,7 @@
         (if p (apply true) (apply false))))
   (inc (int -> int) (incf (peek)))
   (pop ('a -> ) (pop))
-  (quote ('a -> ( -> 'a)) (push (aprog1 (make-block) (setf (code-of it) (list (pop))))))
+  (quote ('a -> ( -> 'a)) (push (make-block (list (pop)))))
   (list (( -> 'A) -> list) (push (list (pop)))))
 
 
