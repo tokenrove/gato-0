@@ -1,4 +1,4 @@
 
 (defpackage :gato
-  (:use :cl :anaphora)
-  (:shadow #:push #:pop #:block #:type-of #:eval #:apply))
+  (:use :cl :anaphora :alexandria)
+  (:shadow #:push #:pop #:block #:type-of #:eval #:apply #:compose))

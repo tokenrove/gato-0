@@ -39,10 +39,8 @@
     (let ((*readtable* *cat-readtable*))
       (emit-code (read-block stream nil)))))
 
-(defmethod emit-code ((block block))
-  (code-of block))
-(defmethod emit-code ((block primitive))
-  (code-of block))
+(defmethod emit-code ((block block)) (code-of block))
+(defmethod emit-code ((block primitive)) (code-of block))
 
 (defun metacat (block) block)
 
@@ -87,8 +85,7 @@
     (set-macro-character #\` nil nil it))) ; disable backquoting
 
 (defmethod apply ((block block))
-  (loop for x in (code-of block)
-        do (eval x *environment*)))
+  (mapcar (rcurry #'eval *environment*) (code-of block)))
 
 (defmethod apply ((primitive primitive))
   (cl:eval (code-of primitive)))
@@ -152,6 +149,7 @@
   (apply ('A ('A -> 'B) -> 'B) (apply (pop)))
   (swap ('a 'b -> 'b 'a) (rotatef (peek) (npeek 1)))
   (<= (int int -> bool) (let ((b (pop)) (a (pop))) (push (<= a b))))
-  (write ('a ->) (print (pop))))
+  (write ('a ->) (print (pop)))
+  (|#type| ('a ->) (print (type-of (pop)))))
 
 (compile-cat-file "prelude.cat")
